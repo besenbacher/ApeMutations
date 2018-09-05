@@ -1,0 +1,4 @@
+individual fastq_1 fastq_2
+Carl TrimmedFASTQ/100x40-Carl_l1_NoIndex_L007_R1_001.fastq.gz TrimmedFASTQ/100x40-Carl_l1_NoIndex_L007_R2_001.fastq.gz
+Carl TrimmedFASTQ/FC2013_061-Carl_s2_NoIndex_L007_R1_001.fastq.gz TrimmedFASTQ/FC2013_061-Carl_s2_NoIndex_L007_R2_001.fastq.gz
+Carolina TrimmedFASTQ/100x40-Carolina_l1_NoIndex_L005_R1_001.fastq.gz TrimmedFASTQ/100x40-Carolina_l1_NoIndex_L005_R2_001.fastq.gz
