@@ -247,3 +247,89 @@ for child, father, mother in ORANGUTAN_FAMILIES:
         target('family_depth_orangutan_' + chrom +'_' + child) << \
             get_family_coverage_context_wr(father=father, mother=mother, child=child,
                                            minQ=minQ, minq=10, refname=ORANGUTAN_REF, chrom=chrom)
+
+
+
+# This part assigns Parent of Origin for all het variants in a child
+# Maybe we should do some rough filtering of vcf file first
+# If you don't have bam-out bamfiles you should just use the filtered bam-files
+
+run_poo_region = \
+    template(input=['new_vcf_files/{specie}/haplocaller.raw.{chrom}.{start}.{end}.vcf',
+                    'bamout_files/{child}/{chrom}.{start}.{end}.bam',
+                    'bamout_files/{child}/{chrom}.{start}.{end}.bam.bai'],
+             output=['poo_data/{child}/{chrom}.{start}.{end}.txt'],
+             walltime='10:00:00', account='DanishPanGenome',memory='1g') << '''
+source /com/extra/Anaconda-Python/LATEST/load.sh
+source activate denovorater
+source /com/extra/bzip2/1.0.6/load.sh
+export PYTHONPATH=/home/besen/.conda/envs/denovorater/lib/python3.6/site-packages
+
+mkdir -p poo_data/{child}/
+python python_scripts/vcf_parent_of_origin_py3.py new_vcf_files/{specie}/haplocaller.raw.{chrom}.{start}.{end}.vcf {father} {mother} {child} bamout_files/{child}/{chrom}.{start}.{end}.bam > poo_data/{child}/{chrom}.{start}.{end}.txt
+'''
+
+for child, father, mother in ORANGUTAN_FAMILIES:
+    for chrom in ORANGUTAN_CHROMOSOMES:
+        target('samtools_index_bamout_' + child + '_' + chrom) << \
+            samtools_index_bamout_chrom(individual=child, chrom=chrom)
+        target('run_poo_' + child + '_' + chrom) << \
+            run_poo_chrom(child=child, father=father, mother=mother, chrom=chrom, specie='orangutans')
+    target('combine_poo_regions_'+ child) << \
+        combine_poo_chrom(child=child, chromosomes=ORANGUTAN_AUTOSOMES, outname='autosomes')
+
+for child, father, mother in GORILLA_FAMILIES:
+    for chrom, start, end in GORILLA_REGIONS:
+        target('samtools_index_bamout_' + child + '_' + chrom +'_' + str(start) ) << \
+            samtools_index_bamout(individual=child, chrom=chrom, start=start, end=end)
+        target('run_poo_' + child + '_' + chrom +'_' + str(start)) << \
+            run_poo_region(child=child, father=father, mother=mother, chrom=chrom, start=start, end=end, specie='gorillas')
+    target('combine_poo_regions_'+ child) << \
+        combine_poo_region(child=child, regions=GORILLA_AUTOSOME_REGIONS, outname='autosomes')
+
+for child, father, mother in CHIMP_FAMILIES:
+    for chrom, start, end in CHIMP_REGIONS:
+        target('samtools_index_bamout_' + child + '_' + chrom +'_' + str(start) ) << \
+            samtools_index_bamout(individual=child, chrom=chrom, start=start, end=end)
+        target('run_poo_' + child + '_' + chrom +'_' + str(start)) << \
+            run_poo_region(child=child, father=father, mother=mother, chrom=chrom, start=start, end=end, specie='chimpanzees')
+    target('combine_poo_regions_'+ child) << \
+        combine_poo_region(child=child, regions=CHIMP_AUTOSOME_REGIONS, outname='autosomes')
+
+
+# This part creates three files for each specie:
+# denovo_raw_SNV.dat: contains all variants where the child is heterozygous and the parents are homozygous for the reference.
+# het_test_SNV.dat: file for testing the callability of heterozygous variants
+# homoref_test_SNV.dat: file for testing the callability of homozygous variants
+
+def vcf2denovo_dat(children):
+    poo_files = ['poo_data/' + child +'_autosomes.txt' for child in children]
+    return \
+        template(input=["new_vcf_files/{specie}.haplocaller.raw.auto.vcf",
+                        "family_description/{specie}.txt"] +
+                        poo_files,
+                 output=["dat_files/gatk/{specie}/denovo_raw_{vtype}.dat",
+                         "dat_files/gatk/{specie}/het_test_{vtype}.dat",
+                         "dat_files/gatk/{specie}/homoref_test_{vtype}.dat"],
+                 walltime='11:59:00', memory='2g',account='MutationRates') << 
+'''
+source /com/extra/python/LATEST/load.sh
+
+mkdir -p dat_files/gatk/{specie}/denovo_{vtype}/
+
+cat new_vcf_files/{specie}.haplocaller.raw.auto.vcf | python python_scripts/get_denovo.py family_description/{specie}.txt dat_files/gatk/{specie}/ --two_bit {ref2bit} --var_type {vtype} --postfix _{vtype} --PoO_data ''' + ' '.join(poo_files)
+
+# CHIMP_REF_2BIT should be path to chimp reference in 2bit format.
+# 2bit files can be downloaded from UCSC:
+# http://hgdownload.soe.ucsc.edu/goldenPath/panTro5/bigZips/panTro5.2bit
+
+target('vcf2dat_chimps') << \
+    vcf2denovo_dat(x[0] for x in CHIMP_FAMILIES)(specie='chimpanzees', vtype='SNV', ref2bit=CHIMP_REF_2BIT)
+target('vcf2dat_gorillas') << \
+    vcf2denovo_dat(x[0] for x in GORILLA_FAMILIES)(specie='gorillas', vtype='SNV', ref2bit=GORILLA_REF_2BIT)
+target('vcf2dat_orangutans') << \
+    vcf2denovo_dat(x[0] for x in ORANGUTAN_FAMILIES)(specie='orangutans', vtype='SNV', ref2bit=ORANGUTAN_REF_2BIT)
+
+#This part add extra columns to the files created above
+
+
