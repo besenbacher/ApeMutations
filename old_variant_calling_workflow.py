@@ -506,6 +506,7 @@ mkdir -p new_results_split_lowMQAD2_w_pc_w_repeat/{specie}/{child}/HOM.GQ_{HOMGQ
 ./R_scripts/calc_rate_family.R {specie} {child} new_results_split_lowMQAD2_w_pc_w_repeat_noSD/{specie}/{child}/HOM.GQ_{HOMGQ}_HET.GQ_{HETGQ}_P.AD2_{AD2}_MAX.AR_{AR}_minDP_{minDP}_maxDP_{maxDP}_lowMQAD2_{lowMQAD2}/ {HOMGQ} {HETGQ} {AD2} {AR} {minDP} {maxDP} {lowMQAD2} {minRC} {maxRC} {minRPRS} {maxRPRS}
 '''
 
+RPRS = {'chimpanzees':(-2.5,2.5), 'gorillas': (-2.5,2.5), 'orangutans':(-2.5,2.5)}
 
 HETGQ = GQ
 HOMGQ = GQ
@@ -513,6 +514,7 @@ AD2 = 0
 lowMQAD2 = 1
 minRC = 0.0
 maxRC = 1.6
+maxDP = 1000
 
 for GQ in range(20,100,5):
     for minDP in [5,10]:
