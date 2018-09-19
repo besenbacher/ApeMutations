@@ -302,34 +302,226 @@ for child, father, mother in CHIMP_FAMILIES:
 # het_test_SNV.dat: file for testing the callability of heterozygous variants
 # homoref_test_SNV.dat: file for testing the callability of homozygous variants
 
-def vcf2denovo_dat(children):
-    poo_files = ['poo_data/' + child +'_autosomes.txt' for child in children]
-    return \
-        template(input=["new_vcf_files/{specie}.haplocaller.raw.auto.vcf",
-                        "family_description/{specie}.txt"] +
-                        poo_files,
-                 output=["dat_files/gatk/{specie}/denovo_raw_{vtype}.dat",
-                         "dat_files/gatk/{specie}/het_test_{vtype}.dat",
-                         "dat_files/gatk/{specie}/homoref_test_{vtype}.dat"],
-                 walltime='11:59:00', memory='2g',account='MutationRates') << 
+
+vcf2denovo_dat_child = \
+    template(input=["new_vcf_files/{specie}.haplocaller.raw.auto.vcf",
+                    "family_description/{specie}.txt",
+                    "poo_data/{child}_autosomes.txt"],
+             output=["dat_files/gatk/{specie}/denovo_raw_{vtype}_{child}.dat",
+                     "dat_files/gatk/{specie}/het_test_{vtype}_{child}.dat",
+                     "dat_files/gatk/{specie}/homoref_test_{vtype}_{child}.dat"],
+                 walltime='11:59:00', memory='2g',account='MutationRates') << \
 '''
 source /com/extra/python/LATEST/load.sh
 
-mkdir -p dat_files/gatk/{specie}/denovo_{vtype}/
+mkdir -p dat_files/gatk/{specie}/
 
-cat new_vcf_files/{specie}.haplocaller.raw.auto.vcf | python python_scripts/get_denovo.py family_description/{specie}.txt dat_files/gatk/{specie}/ --two_bit {ref2bit} --var_type {vtype} --postfix _{vtype} --PoO_data ''' + ' '.join(poo_files)
+cat new_vcf_files/{specie}.haplocaller.raw.auto.vcf | python python_scripts/get_denovo_single.py family_description/{specie}.txt dat_files/gatk/{specie}/ {refname} {child} --var_type {vtype} --postfix {vtype}_{child} --PoO_data poo_data/{child}_autosomes.txt
+'''
+
 
 # CHIMP_REF_2BIT should be path to chimp reference in 2bit format.
 # 2bit files can be downloaded from UCSC:
 # http://hgdownload.soe.ucsc.edu/goldenPath/panTro5/bigZips/panTro5.2bit
 
-target('vcf2dat_chimps') << \
-    vcf2denovo_dat(x[0] for x in CHIMP_FAMILIES)(specie='chimpanzees', vtype='SNV', ref2bit=CHIMP_REF_2BIT)
-target('vcf2dat_gorillas') << \
-    vcf2denovo_dat(x[0] for x in GORILLA_FAMILIES)(specie='gorillas', vtype='SNV', ref2bit=GORILLA_REF_2BIT)
-target('vcf2dat_orangutans') << \
-    vcf2denovo_dat(x[0] for x in ORANGUTAN_FAMILIES)(specie='orangutans', vtype='SNV', ref2bit=ORANGUTAN_REF_2BIT)
+for child,father,mother in CHIMP_FAMILIES:
+    target('vcf2denovo_dat_' + child) << \
+        vcf2denovo_dat_child(specie='chimpanzees', vtype='SNV', refname=CHIMP_REF_2BIT, child=child)
+for child,father,mother in GORILLA_FAMILIES:
+    target('vcf2denovo_dat_' + child) << \
+        vcf2denovo_dat_child(specie='gorillas', vtype='SNV', refname=GORILLA_REF_2BIT, child=child)
+for child,father,mother in ORANGUTAN_FAMILIES:
+    target('vcf2denovo_dat_' + child) << \
+        vcf2denovo_dat_child(specie='orangutans', vtype='SNV', refname=ORANGUTAN_REF_2BIT, child=child)
+
+
 
 #This part add extra columns to the files created above
+
+_make_known = \
+    template(input=[],
+            output=['tmp/{specie}_known.txt'],
+            walltime='10:00:00', memory='4g', account='DanishPanGenome') << '''
+
+cat {known_files} | awk '$1!~/#/{{print $1"_"$2"_"$5,"TRUE"}}' | sort -u -k1,1 > tmp/{specie}_known.txt
+'''
+
+add_known = template(input=['dat_files/{caller}/{specie}/denovo_raw_SNV_{child}_w_DPS20.dat',
+                             'tmp/{specie}_known.txt'],
+                      output=['dat_files/{caller}/{specie}/denovo_raw_SNV_{child}_w_DPS20_w_known.dat'],
+                      walltime='10:00:00', memory='4g', account='DanishPanGenome') << '''
+n=$(head -1 dat_files/{caller}/{specie}/denovo_raw_SNV_{child}_w_DPS20.dat | awk '{{print NF}}')
+cat dat_files/{caller}/{specie}/denovo_raw_SNV_{child}_w_DPS20.dat | awk '{{print $1"_"$2"_"$4,$0}}' | sort -k1,1 | join -a1 - tmp/{specie}_known.txt | cut -d" " -f2- | awk '{{if (NF=='$n') {{if ($1=="CHROM") print $0,"known_variant"; else print $0,"FALSE"}} else print $0}}' | sort -gk2 > dat_files/{caller}/{specie}/denovo_raw_SNV_{child}_w_DPS20_w_known.dat
+'''
+
+def make_known(**arguments):
+    extra_options = {'input':arguments["known"]}
+    arguments["known_files"] = ' '.join(arguments["known"])
+    (options, spec) = _make_known(**arguments)
+    return (add_options(options, extra_options), spec)
+
+knownD = {'gorillas':gorilla_known,
+          'orangutans':orang_known,
+          'chimpanzees':chimp_known}
+
+
+for specie in knownD:
+    target('make_known_' + specie) << \
+        make_known(specie=specie, caller='gatk', known=knownD[specie])
+
+for caller in ['gatk']:#, 'platypus']:
+    for specie, child, father, mother in FAMILIES:
+        target('add_known_' + child + '_' + caller) << \
+            add_known(specie=specie, caller=caller, known=orang_known, child=child)
+
+get_sam_depth_variants = \
+  template(input = \
+           ['dat_files/{caller}/{specie}/denovo_raw_{vtype}_{child}.dat',
+            'dat_files/{caller}/{specie}/het_test_{vtype}_{child}.dat',
+            'dat_files/{caller}/{specie}/homoref_test_{vtype}_{child}.dat',
+            'filtered_bam_files/{father}.bam',
+            'filtered_bam_files/{mother}.bam',
+            'filtered_bam_files/{child}.bam'],
+           output = \
+            ["sam_depth/{specie}/depth_Q{minQ}_q{minq}_denovo_raw_{vtype}.{child}.txt",
+             "sam_depth/{specie}/depth_Q{minQ}_q{minq}_het_test_{vtype}.{child}.txt",
+             "sam_depth/{specie}/depth_Q{minQ}_q{minq}_homoref_test_{vtype}.{child}.txt"],
+           account="MutationRates", walltime="110:00:00",memory="12g") << \
+'''
+source /com/extra/samtools/LATEST/load.sh
+
+mkdir -p sam_depth/{specie}
+
+samtools depth -b <(cat dat_files/{caller}/{specie}/denovo_raw_{vtype}_{child}.dat | awk '$5=="{child}" {{print $1,$2-1,$2}}' | ~/Scripts/gorsort.sh) -Q{minQ} -q{minq} filtered_bam_files/{child}.bam filtered_bam_files/{father}.bam filtered_bam_files/{mother}.bam | awk '{{print $1"_"$2"_{child}",$3,$4,$5}}' | sort -k1,1 > sam_depth/{specie}/depth_Q{minQ}_q{minq}_denovo_raw_{vtype}.{child}.txt
+
+samtools depth -b <(cat dat_files/{caller}/{specie}/homoref_test_{vtype}_{child}.dat | awk '$5=="{child}" {{print $1,$2-1,$2}}' | ~/Scripts/gorsort.sh) -Q{minQ} -q{minq} filtered_bam_files/{child}.bam filtered_bam_files/{father}.bam filtered_bam_files/{mother}.bam | awk '{{print $1"_"$2"_{child}",$3,$4,$5}}' | sort -k1,1 > sam_depth/{specie}/depth_Q{minQ}_q{minq}_homoref_test_{vtype}.{child}.txt
+
+samtools depth -b <(cat dat_files/{caller}/{specie}/het_test_{vtype}_{child}.dat | awk '$5=="{child}" {{print $1,$2-1,$2}}' | ~/Scripts/gorsort.sh) -Q{minQ} -q{minq} filtered_bam_files/{child}.bam filtered_bam_files/{father}.bam filtered_bam_files/{mother}.bam | awk '{{print $1"_"$2"_{child}",$3,$4,$5}}' | sort -k1,1 > sam_depth/{specie}/depth_Q{minQ}_q{minq}_het_test_{vtype}.{child}.txt
+
+'''
+
+minQ=20
+for specie, child, father, mother in FAMILIES:
+    for var_type in ['SNV']:
+        target('get_sam_depth_variants_' + child + '_' + var_type + '_' + str(minQ)) << \
+          get_sam_depth_variants(specie=specie,
+                                 child=child,
+                                 father=father,
+                                 mother=mother,
+                                 vtype=var_type,
+                                 caller="gatk",
+                                 minQ=minQ,
+                                 minq=10)
+
+
+merge_and_join = \
+    template(
+        input=['dat_files/{caller}/{specie}/{ftype}_{child}{extra}.dat',
+               'sam_depth/{specie}/depth_Q{minQ}_q{minq}_{ftype}.{child}.txt'],
+        output=['dat_files/{caller}/{specie}/{ftype}_{child}{extra}_w_DPS{minQ}.dat'],
+        memory='32g', account='MutationRates', walltime='11:00:00') << \
+'''
+export TMPDIR=/home/besen/faststorage/tmp/
+head -1 dat_files/{caller}/{specie}/{ftype}_{child}{extra}.dat | awk -v OFS="\t" '{{print $0,"CHILD.DPS{minQ}","FATHER.DPS{minQ}","MOTHER.DPS{minQ}"}}' > dat_files/{caller}/{specie}/{ftype}_{child}{extra}_w_DPS{minQ}.dat
+cat dat_files/{caller}/{specie}/{ftype}_{child}{extra}.dat | awk '$1!="CHROM"{{print $1"_"$2"_"$5, $0}}' | sort -k1,1 | join - <(sort -k1,1 sam_depth/{specie}/depth_Q{minQ}_q{minq}_{ftype}.{child}.txt) | sed 'y/ /\t/' | cut -f2- >>  dat_files/{caller}/{specie}/{ftype}_{child}{extra}_w_DPS{minQ}.dat
+'''
+
+addAD2_lowMQ = \
+    template(
+        input=['dat_files/{caller}/{specie}/{ftype}_{child}{extra}.dat'],
+        output=['dat_files/{caller}/{specie}/{ftype}_{child}{extra}_w_lowMQ.dat'],
+        memory='4g', account='MutationRates', walltime='24:00:00') << \
+'''
+source /com/extra/Anaconda-Python/LATEST/load.sh
+source activate denovorater
+source /com/extra/bzip2/1.0.6/load.sh
+
+cat dat_files/{caller}/{specie}/{ftype}_{child}{extra}.dat | python python_scripts/add_AD2_lowQ_py3.py new_gatk_files/{child}.recalibrated.bam new_gatk_files/{father}.recalibrated.bam new_gatk_files/{mother}.recalibrated.bam > dat_files/{caller}/{specie}/{ftype}_{child}{extra}_w_lowMQ.dat
+'''
+
+add_parents_cov = \
+    template(
+        input=['dat_files/{caller}/{specie}/{ftype}_{child}{extra}.dat'],
+        output=['dat_files/{caller}/{specie}/{ftype}_{child}{extra}_w_pc.dat'],
+        memory='4g', account='MutationRates', walltime='24:00:00') << \
+'''
+source /com/extra/Anaconda-Python/LATEST/load.sh
+source activate denovorater
+source /com/extra/bzip2/1.0.6/load.sh
+
+cat dat_files/{caller}/{specie}/{ftype}_{child}{extra}.dat | python python_scripts/add_individual_coverage.py > dat_files/{caller}/{specie}/{ftype}_{child}{extra}_w_pc.dat
+'''
+
+
+add_repeat = \
+    template(
+        input=['dat_files/{caller}/{specie}/{ftype}_{child}{extra}.dat'],
+        output=['dat_files/{caller}/{specie}/{ftype}_{child}{extra}_w_repeat.dat'],
+        memory='4g', account='MutationRates', walltime='24:00:00') << \
+'''
+source /com/extra/python/2.7/load.sh
+cat dat_files/{caller}/{specie}/{ftype}_{child}{extra}.dat | python python_scripts/add_repeat_status.py ~/Data/2bit/{refgenome}.2bit > dat_files/{caller}/{specie}/{ftype}_{child}{extra}_w_repeat.dat
+'''
+
+vtype='SNV'
+for specie, child, father, mother in FAMILIES:
+    #if child == 'Ogan':
+    #    continue
+    for ftype in ['denovo_raw', 'het_test', 'homoref_test']:
+        ftype += '_' + vtype
+        target('merge_and_join_'+ child + '_' + ftype) << \
+            merge_and_join(child=child, specie=specie, caller="gatk",
+                           ftype=ftype, minQ=20, minq=10, extra='')
+    for ftype,extra in [('denovo_raw','_w_DPS20_w_known'), ('het_test','_w_DPS20'),('homoref_test','_w_DPS20')]:
+        ftype += '_' + vtype
+        target('addAD2_lowMQ_'+ child + '_' + ftype + '_' + str(minQ)) << \
+            addAD2_lowMQ(child=child, father=father, mother=mother,
+                         specie=specie, caller="gatk", ftype=ftype, extra=extra)
+    for ftype,extra in [('denovo_raw','_w_DPS20_w_known_w_lowMQ'), ('het_test','_w_DPS20_w_lowMQ'),('homoref_test','_w_DPS20_w_lowMQ')]:
+        ftype += '_' + vtype
+        target('addPC_'+ child + '_' + ftype + '_' + str(minQ)) << \
+            add_parents_cov(child=child, father=father, mother=mother,
+                            specie=specie, caller="gatk", ftype=ftype, extra=extra)
+
+    for ftype,extra in [('denovo_raw','_w_DPS20_w_known_w_lowMQ_w_pc'), ('het_test','_w_DPS20_w_lowMQ_w_pc'),('homoref_test','_w_DPS20_w_lowMQ_w_pc')]:
+        ftype += '_' + vtype
+        target('add_repeat_'+ child + '_' + ftype + '_' + str(minQ)) << \
+            add_repeat(child=child, father=father, mother=mother, refgenome=refD[specie],
+                       specie=specie, caller="gatk", ftype=ftype, extra=extra)
+
+
+# This part finds de novo mutations and calculates rates given a set of cutoffs. 
+
+calc_rate_family = \
+    template(input=['dat_files/{caller}/{specie}/denovo_raw_SNV_{child}_w_DPS20_w_known_w_lowMQ_w_pc_w_repeat.dat',
+                    'dat_files/{caller}/{specie}/het_test_SNV_w_DPS20_w_lowMQ_w_pc_w_repeat.dat',
+                    'dat_files/{caller}/{specie}/homoref_test_SNV_w_DPS20_w_lowMQ_w_pc_w_repeat.dat'],
+             output=["new_results_split_lowMQAD2_w_pc_w_repeat_noSD/{specie}/{child}/HOM.GQ_{HOMGQ}_HET.GQ_{HETGQ}_P.AD2_{AD2}_MAX.AR_{AR}_minDP_{minDP}_maxDP_{maxDP}_lowMQAD2_{lowMQAD2}/avg_rate.txt"],
+             account="MutationRates",walltime="2:00:00",memory="6g") << \
+'''
+source /com/extra/R/3.4/load.sh
+
+mkdir -p new_results_split_lowMQAD2_w_pc_w_repeat/{specie}/{child}/HOM.GQ_{HOMGQ}_HET.GQ_{HETGQ}_P.AD2_{AD2}_MAX.AR_{AR}_minDP_{minDP}_maxDP_{maxDP}_lowMQAD2_{lowMQAD2}/
+
+./R_scripts/calc_rate_family.R {specie} {child} new_results_split_lowMQAD2_w_pc_w_repeat_noSD/{specie}/{child}/HOM.GQ_{HOMGQ}_HET.GQ_{HETGQ}_P.AD2_{AD2}_MAX.AR_{AR}_minDP_{minDP}_maxDP_{maxDP}_lowMQAD2_{lowMQAD2}/ {HOMGQ} {HETGQ} {AD2} {AR} {minDP} {maxDP} {lowMQAD2} {minRC} {maxRC} {minRPRS} {maxRPRS}
+'''
+
+
+HETGQ = GQ
+HOMGQ = GQ
+AD2 = 0
+lowMQAD2 = 1
+minRC = 0.0
+maxRC = 1.6
+
+for GQ in range(20,100,5):
+    for minDP in [5,10]:
+        for specie, child, father, mother in FAMILIES:
+            minRPRS,maxRPRS = RPRS[specie]
+            target('rate_%s_%d_%d_%d_%.2f_%d_%d_%d'% (child, HOMGQ, HETGQ, AD2, AR, minDP, maxDP, lowMQAD2)) << \
+                calc_rate_family(caller='gatk', specie=specie, child=child,
+                                 HOMGQ=HOMGQ, HETGQ=HETGQ, AD2=AD2, AR=AR, 
+                                 minDP=minDP, maxDP=maxDP,lowMQAD2=lowMQAD2, 
+                                 minRPRS=minRPRS, maxRPRS=maxRPRS, minRC=minRC, maxRC=maxRC)
 
 
