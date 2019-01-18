@@ -55,7 +55,8 @@ def get_pileup_column(site):
     len_diff = len(site[3]) - len(site[2])
     reflen = site[4]
     if len_diff==0:
-        assert reflen == 1
+        if reflen != 1:
+            return {}
         for col in pileup:
             if col.pos == site[1]-1:
                 return dict((read.alignment.qname, (read.alignment.seq[read.query_position],
@@ -112,6 +113,8 @@ def get_obvious_PoO():
             child_a1, child_a2 = gt_child.gt_bases.split('/')
 
             if (not record.is_snp) and len(child_a1)==len(child_a2) and len(child_a1)!=1:
+                continue
+            if child_a1 == '*'  or child_a2 == '*':
                 continue
             var = (record.CHROM, record.POS, child_a1, child_a2, len(record.REF))
             if LGQ(gt_child) < args.min_child_GQ:
